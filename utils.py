@@ -1,38 +1,68 @@
-from PIL import Image, ImageOps
+from PIL import Image
 import numpy as np
+import traceback
 
 def detect_face_bbox(image_np, method="haar"):
     """
     image_np: HxWx3 uint8 numpy array (RGB)
     returns bounding box as (x, y, w, h) in pixel coords or None
 
-    Default uses OpenCV Haar cascade which is lightweight and installs cleanly.
+    Tries to use OpenCV (cv2). If cv2 cannot be imported or fails, will try
+    face_recognition if available. If no detector is available or detection
+    fails, returns None.
     """
-    if method not in ("haar",):
-        raise ValueError("Only 'haar' method supported in this build. Use method='haar'.")
-
-    import cv2
-    # convert to gray
+    # Try OpenCV first
     try:
-        gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+        import cv2
     except Exception:
-        # if image is already gray or fails, convert via numpy
-        if image_np.ndim == 2:
-            gray = image_np
-        else:
-            gray = cv2.cvtColor(image_np[:, :, :3], cv2.COLOR_RGB2GRAY)
+        cv2 = None
 
-    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    face_cascade = cv2.CascadeClassifier(cascade_path)
+    if cv2 is not None and method in ("haar",):
+        try:
+            # convert to gray
+            if image_np.ndim == 3:
+                gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+            else:
+                gray = image_np
+            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            face_cascade = cv2.CascadeClassifier(cascade_path)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            if len(faces) == 0:
+                return None
+            faces = sorted(faces, key=lambda r: r[2] * r[3], reverse=True)
+            x, y, w, h = faces[0]
+            return (int(x), int(y), int(w), int(h))
+        except Exception:
+            # If something unexpected happens inside cv2 detection, fall through to other options
+            print("Warning: OpenCV face detection failed:\n", traceback.format_exc())
 
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-    if len(faces) == 0:
-        return None
+    # Try face_recognition as a fallback (if installed)
+    try:
+        import face_recognition
+    except Exception:
+        face_recognition = None
 
-    # Take the largest detection (in case of multiple)
-    faces = sorted(faces, key=lambda r: r[2] * r[3], reverse=True)
-    x, y, w, h = faces[0]
-    return (int(x), int(y), int(w), int(h))
+    if face_recognition is not None:
+        try:
+            # face_recognition expects RGB arrays
+            locations = face_recognition.face_locations(image_np, model="hog")
+            if not locations:
+                return None
+            # face_recognition returns (top, right, bottom, left)
+            # choose the largest
+            areas = [ (loc[2]-loc[0])*(loc[1]-loc[3]) for loc in locations ]
+            idx = int(np.argmax(areas))
+            top, right, bottom, left = locations[idx]
+            x = left
+            y = top
+            w = right - left
+            h = bottom - top
+            return (int(x), int(y), int(w), int(h))
+        except Exception:
+            print("Warning: face_recognition detection failed:\n", traceback.format_exc())
+
+    # No detector available or detection failed — return None so caller can fallback
+    return None
 
 
 def _mask_target_box(mask_img):
@@ -51,7 +81,6 @@ def _mask_target_box(mask_img):
     return (left, top, right, bottom)
 
 
-from PIL import Image
 def paste_face_on_template(template_img, mask_img, face_img, align="center", blend=0.9, manual_scale=None, manual_offset=(0,0)):
     """
     Paste face_img onto template_img guided by mask_img.
@@ -109,7 +138,6 @@ def paste_face_on_template(template_img, mask_img, face_img, align="center", ble
     if blend >= 1.0:
         combined = Image.alpha_composite(combined, layer)
     else:
-        # mix using alpha for smoothness
         mask_blend = layer.split()[-1].point(lambda p: int(p * blend))
         layer_with_adjusted_alpha = layer.copy()
         layer_with_adjusted_alpha.putalpha(mask_blend)
