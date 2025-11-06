@@ -1,21 +1,17 @@
 """
-Origami Meme Car — Single fixed mask, interactive crop, continuous background fill
+Origami Meme Car — Crop to GREEN slot with anchored continuous fill and single "Fill zoom" slider
 
-Usage:
-- Put `template.png` and `mask.png` (same size) in the app folder.
-  - mask.png must use vivid GREEN (R=0,G=255,B=0) to mark the rectangular face slot.
-  - mask.png may use WHITE (R=255,G=255,B=255) to mark the area to be filled with the rest
-    of the photo (continuous fill).
-- User flow in UI:
-  1) Upload a photo.
-  2) Draw/resize one rectangle on the canvas to select the face (or use slider fallback).
-  3) The app places the selected crop into the GREEN slot and fills the WHITE area with the
-     contiguous part of the same photo (the part adjacent to the crop), avoiding duplicate face.
-  4) Download the final printable PNG.
-
-This file is intentionally self-contained and robust: it tries to use streamlit-drawable-canvas
-for the on-canvas cropper (best UX). If the component or the host Streamlit version is not available,
-it falls back to a simple slider-based crop UI so the app still works without extra dependencies.
+Behavior summary:
+- Place `template.png` and `mask.png` in the app folder (mask: pure GREEN (0,255,0) = face slot;
+  WHITE (255,255,255) = area to be filled with the rest of the photo).
+- User uploads a photo and draws (or sliders) a rectangle to select the face.
+- The selected crop is placed into the GREEN slot.
+- The WHITE area is filled by sampling the contiguous part of the original photo that lies
+  in the same direction from the face crop as the white area is from the green slot.
+  The sampled region is anchored at the crop edge (so the touching side remains fixed)
+  while a single "Fill zoom (%)" slider lets you expand/contract the sampled region
+  outward (zoom out = show more of the photo while keeping the touching edge aligned).
+- Minimal alignment controls are provided (tiny offset & rotation). No other fill sliders.
 """
 
 import streamlit as st
@@ -25,20 +21,20 @@ import io
 import base64
 from io import BytesIO
 
-st.set_page_config(page_title="Origami Meme Car — Crop to GREEN slot", layout="centered")
-st.title("Origami Meme Car — crop face → fill back with the rest of the photo")
+st.set_page_config(page_title="Origami Meme Car — Anchored continuous fill", layout="centered")
+st.title("Origami Meme Car — anchored continuous fill (one slider)")
 
 st.write(
-    "Place template.png and mask.png in the app folder. Mask must use vivid GREEN (0,255,0) "
-    "for the face rectangle. Upload a photo, draw one rectangle on the photo canvas (or use the slider fallback). "
-    "The app will place your crop into the green slot and fill the white area with the rest of the image (a continuous continuation)."
+    "Put template.png and mask.png in the app folder. Mask: GREEN (0,255,0) = face slot; WHITE (255,255,255) = area to fill.\n"
+    "Upload a photo and draw one rectangle to crop the face. Use the 'Fill zoom' slider to zoom out the fill region while\n"
+    "keeping the side that touches the face fixed (anchored)."
 )
 
-# --- Compatibility helper for streamlit-drawable-canvas (older Streamlit may miss image_to_url) ---
+# Compatibility helper for streamlit-drawable-canvas image_to_url on older Streamlit
 try:
-    from streamlit.elements import image as st_image_module  # newer internals
+    from streamlit.elements import image as st_image_module
 except Exception:
-    st_image_module = st  # fallback
+    st_image_module = st
 
 if not hasattr(st_image_module, "image_to_url"):
     def _image_to_url_fallback(img):
@@ -52,14 +48,14 @@ if not hasattr(st_image_module, "image_to_url"):
         return f"data:image/png;base64,{b64}"
     st_image_module.image_to_url = _image_to_url_fallback
 
-# Try to import drawable-canvas; if missing we'll fallback to sliders
+# Try to import canvas component
 USE_CANVAS = True
 try:
     from streamlit_drawable_canvas import st_canvas
 except Exception:
     USE_CANVAS = False
 
-# Load template & mask (fixed files in repo working directory)
+# Load template and mask
 try:
     template = Image.open("template.png").convert("RGBA")
     mask = Image.open("mask.png").convert("RGBA")
@@ -75,7 +71,7 @@ st.image(template, width=360)
 st.subheader("Mask (fixed) — GREEN = face slot, WHITE = area filled by rest of photo")
 st.image(mask, width=360)
 
-# Helper: detect vivid green / white bounding boxes in mask
+# Helper: find vivid green / white bounding boxes in mask
 def find_color_bbox(mask_rgba, color="green"):
     arr = np.array(mask_rgba.convert("RGBA"))
     r = arr[..., 0].astype(int)
@@ -103,12 +99,12 @@ green_box = find_color_bbox(mask, "green")
 white_box = find_color_bbox(mask, "white")
 
 if green_box is None:
-    st.error("Mask does not contain a vivid GREEN region (0,255,0). Edit mask.png to mark the face rectangle with pure green.")
+    st.error("Mask must contain a vivid GREEN region (0,255,0) marking the face slot.")
     st.stop()
 
 st.write("Detected GREEN box (face slot):", green_box)
 if white_box is None:
-    st.info("No white area detected in mask; only the face will be placed into the green slot.")
+    st.info("No WHITE area detected in mask; only the face will be placed into the green slot.")
 
 # Upload photo
 uploaded = st.file_uploader("Upload a photo (jpg/png) — then draw a rectangle to crop the face", type=["jpg", "jpeg", "png"])
@@ -121,16 +117,16 @@ pw, ph = photo.size
 st.subheader("Photo")
 st.image(photo, width=360)
 
-# Canvas display width control (small and unobtrusive)
-display_w = st.slider("Canvas display width (px)", 320, 1200, 700, help="Increase to make on-canvas cropping more precise.")
+# Canvas display width
+display_w = st.slider("Canvas display width (px)", 320, 1200, 700, help="Increase for finer on-canvas cropping.")
 scale = display_w / float(pw)
 display_h = int(ph * scale)
 
-# Crop rectangle (in display coords) will be stored in canvas_rect
+# Get crop rectangle via canvas or fallback sliders
 canvas_rect = None
 
 if USE_CANVAS:
-    st.write("Draw one rectangle on the photo canvas to select the face. The app will use the rest of the photo to populate the white area automatically.")
+    st.write("Draw a rectangle on the photo to select the face (one rectangle).")
     try:
         canvas_result = st_canvas(
             fill_color="rgba(0,0,0,0)",
@@ -154,19 +150,17 @@ if USE_CANVAS:
                 height = float(last.get("height", 0)) * float(last.get("scaleY", 1))
                 canvas_rect = (left, top, width, height)
     except Exception as e:
-        st.warning(f"Canvas failed to initialize: {e}. Using slider fallback.")
+        st.warning(f"Canvas failed to initialize: {e}. Falling back to sliders.")
         USE_CANVAS = False
         canvas_rect = None
 
-# Slider fallback if canvas missing or no rectangle drawn
 if (not USE_CANVAS) or (canvas_rect is None):
-    st.warning("Interactive canvas not available or no rectangle drawn. Use the fallback sliders below to position the crop.")
+    st.warning("Interactive canvas not available or no rectangle drawn. Use the sliders below to crop.")
     st.subheader("Fallback crop controls")
     center_x = st.slider("Crop center X (%)", 0, 100, 50)
     center_y = st.slider("Crop center Y (%)", 0, 100, 50)
     zoom = st.slider("Zoom (%) — higher = zoom in (100 = no zoom)", 10, 400, 100)
 
-    # aspect locked to green box
     gw = green_box[2] - green_box[0]
     gh = green_box[3] - green_box[1]
     aspect = None
@@ -192,7 +186,6 @@ if (not USE_CANVAS) or (canvas_rect is None):
         left = max(0, right - crop_w)
     if bottom - top < crop_h:
         top = max(0, bottom - crop_h)
-    # display coords representation
     d_left = left * scale
     d_top = top * scale
     d_w = (right - left) * scale
@@ -202,7 +195,7 @@ if (not USE_CANVAS) or (canvas_rect is None):
     face_crop = photo.crop(crop_box).convert("RGBA")
     st.image(face_crop, caption="Cropped preview (fallback)", width=240)
 
-# If canvas_rect came from drawable canvas, convert to original photo coords
+# If using canvas, convert canvas rect to photo coords
 if canvas_rect is not None and USE_CANVAS:
     left_disp, top_disp, width_disp, height_disp = canvas_rect
     left_disp = max(0, left_disp)
@@ -221,28 +214,27 @@ if canvas_rect is not None and USE_CANVAS:
     face_crop = photo.crop(crop_box).convert("RGBA")
     st.image(face_crop, caption="Cropped preview", width=240)
 
-# Minimal alignment controls: small offset & rotation (kept optional and small)
+# Minimal alignment inputs
 st.markdown("---")
-st.subheader("Optional small alignment (leave default for automatic placement)")
+st.subheader("Optional tiny alignment")
 offset_x = st.number_input("Offset X (px)", value=0, step=1)
 offset_y = st.number_input("Offset Y (px)", value=0, step=1)
 rotation = st.number_input("Rotation (degrees)", value=0, step=1)
-
 if rotation != 0:
     face_crop = face_crop.rotate(float(rotation), resample=Image.BICUBIC, expand=True)
 
-# --- New continuous fill function: sample contiguous region from photo that continues from the crop ---
-from PIL import ImageChops
+# Single slider: Fill zoom (controls how much of the surrounding photo is sampled; anchored at the touching side)
+st.subheader("Fill zoom")
+st.write("Zoom out the white-area fill while keeping the side that touches the cropped face fixed (anchored).")
+fill_zoom = st.slider("Fill zoom (%)", 50, 250, 100, help="100 = natural scale. >100 = sample more of the photo (zoomed out).")
 
-def create_continuous_fill(photo_img, crop_box, green_box, white_box, blur_overlap_radius=12):
+# Anchored continuous fill function (uses fill_zoom and anchors sampled region at crop edge)
+def create_continuous_fill_anchored(photo_img, crop_box, green_box, white_box, fill_zoom_pct=100, blur_overlap_radius=12):
     """
-    Sample a region of photo_img that is continuous/adjacent to the user's crop so the white area
-    looks like the rest of the same image moving forward from the cropped face.
-    - photo_img: PIL RGBA original photo
-    - crop_box: (l,t,r,b) in photo pixel coords indicating user's crop
-    - green_box: (l,t,r,b) in template coords where crop will be placed
-    - white_box: (l,t,r,b) in template coords to be filled
-    Returns: PIL RGBA image sized exactly to (white_box.width, white_box.height)
+    Sample a region from photo_img that continues from the crop in the same direction
+    as white_box is placed relative to green_box. Anchor the sampled region to the crop edge
+    so the touching side doesn't shift. fill_zoom_pct >100 expands the sampled area outward.
+    Returns an image sized to (white_box width, white_box height).
     """
     pw, ph = photo_img.size
     tw = max(1, white_box[2] - white_box[0])
@@ -262,31 +254,58 @@ def create_continuous_fill(photo_img, crop_box, green_box, white_box, blur_overl
     w_cx = white_box[0] + tw / 2.0
     w_cy = white_box[1] + th / 2.0
 
-    # template pixels per photo pixel for the crop->green mapping
+    # template pixels per photo pixel scale for mapping
     scale_template_per_photo = float(g_w) / float(c_w)
 
-    # vector from green center to white center (in template pixels)
+    # vector from green center to white center in template pixels
     vec_tx = w_cx - g_cx
     vec_ty = w_cy - g_cy
 
-    # convert vector to photo pixels
-    vec_px = vec_tx / scale_template_per_photo
-    vec_py = vec_ty / scale_template_per_photo
+    # direction: decide dominant axis to anchor (horizontal or vertical)
+    if abs(vec_tx) >= abs(vec_ty):
+        direction = "horizontal"
+        dir_sign = 1 if vec_tx > 0 else -1
+    else:
+        direction = "vertical"
+        dir_sign = 1 if vec_ty > 0 else -1
 
-    # source center in photo to sample from (adjacent to crop)
-    src_cx = c_cx + vec_px
-    src_cy = c_cy + vec_py
+    # Base source size in photo pixels that would match the white target at natural scale
+    base_src_w = max(1, int(round(tw / scale_template_per_photo)))
+    base_src_h = max(1, int(round(th / scale_template_per_photo)))
 
-    # source region size in photo pixels that corresponds to white target
-    src_w = max(1, int(round(tw / scale_template_per_photo)))
-    src_h = max(1, int(round(th / scale_template_per_photo)))
+    # Apply zoom factor
+    zoom = float(fill_zoom_pct) / 100.0
+    src_w = max(1, int(round(base_src_w * zoom)))
+    src_h = max(1, int(round(base_src_h * zoom)))
 
-    src_left = int(round(src_cx - src_w / 2.0))
-    src_top = int(round(src_cy - src_h / 2.0))
-    src_right = src_left + src_w
-    src_bottom = src_top + src_h
+    # Determine anchored src box so that the edge touching the crop stays aligned.
+    # If vertical and white is below green -> anchor src_top to crop_bottom; expand downward by src_h
+    if direction == "vertical":
+        if dir_sign > 0:
+            # white is below green: anchor src_top at crop_bottom
+            src_top = c_bottom
+            src_left = int(round(c_cx - src_w / 2.0))
+        else:
+            # white is above green: anchor src_bottom at crop_top
+            src_top = int(round(c_top - src_h))
+            src_left = int(round(c_cx - src_w / 2.0))
+        src_left = int(round(src_left))
+        src_right = src_left + src_w
+        src_bottom = src_top + src_h
+    else:
+        # horizontal
+        if dir_sign > 0:
+            # white is to the right: anchor src_left at crop_right
+            src_left = c_right
+            src_top = int(round(c_cy - src_h / 2.0))
+        else:
+            # white is to the left: anchor src_right at crop_left
+            src_left = int(round(c_left - src_w))
+            src_top = int(round(c_cy - src_h / 2.0))
+        src_right = src_left + src_w
+        src_bottom = src_top + src_h
 
-    # Create a transparent canvas to paste the sampled piece (handles out-of-bounds gracefully)
+    # If the anchor pushes the sampled area partially off the photo, we will paste what exists and pad otherwise
     src_canvas = Image.new("RGBA", (src_w, src_h), (0, 0, 0, 0))
 
     int_left = max(0, src_left)
@@ -300,7 +319,7 @@ def create_continuous_fill(photo_img, crop_box, green_box, white_box, blur_overl
         paste_y = int_top - src_top
         src_canvas.paste(piece, (paste_x, paste_y))
     else:
-        # fallback: center-crop the photo to the src aspect and use that
+        # fallback: center-crop the photo to src aspect
         fallback = photo_img.copy().convert("RGBA")
         p_aspect = pw / ph if ph != 0 else 1.0
         t_aspect = src_w / src_h if src_h != 0 else 1.0
@@ -310,13 +329,13 @@ def create_continuous_fill(photo_img, crop_box, green_box, white_box, blur_overl
         else:
             new_w = pw
             new_h = int(pw / t_aspect) if t_aspect != 0 else ph
-        left_f = max(0, (pw - new_w) // 2)
-        top_f = max(0, (ph - new_h) // 2)
-        fallback_piece = fallback.crop((left_f, top_f, left_f + new_w, top_f + new_h))
+        lf = max(0, (pw - new_w) // 2)
+        tf = max(0, (ph - new_h) // 2)
+        fallback_piece = fallback.crop((lf, tf, lf + new_w, tf + new_h))
         fallback_resized = fallback_piece.resize((src_w, src_h), Image.LANCZOS)
         src_canvas.paste(fallback_resized, (0, 0))
 
-    # If overlap exists between sample region and crop region, blur the overlap in src_canvas
+    # If sampled area overlaps crop area, blur overlapping region so face doesn't appear twice
     overlap_left = max(src_left, c_left)
     overlap_top = max(src_top, c_top)
     overlap_right = min(src_right, c_right)
@@ -334,33 +353,32 @@ def create_continuous_fill(photo_img, crop_box, green_box, white_box, blur_overl
     final_fill = src_canvas.resize((tw, th), Image.LANCZOS)
     return final_fill
 
-# Build white_fill using continuous fill function
+# Generate white_fill using anchored continuous fill (with user's fill_zoom)
 white_fill = None
 if white_box is not None:
     try:
-        white_fill = create_continuous_fill(photo, crop_box, green_box, white_box, blur_overlap_radius=12)
+        white_fill = create_continuous_fill_anchored(photo, crop_box, green_box, white_box, fill_zoom_pct=fill_zoom, blur_overlap_radius=12)
     except Exception as e:
-        st.warning(f"Could not create continuous fill automatically: {e}")
+        st.warning(f"Automatic fill creation failed: {e}")
         white_fill = None
 
-# Compose final image: paste white_fill then place face into green slot clipped by green mask
+# Compose final image: paste white_fill then face (clipped by green mask)
 composed = template.copy().convert("RGBA")
 layer = Image.new("RGBA", composed.size, (0, 0, 0, 0))
 
-# Paste white_fill (if present) using white mask alpha; apply small feather for nicer blend
+# Paste white fill with a small feather for nicer blend
 if white_fill is not None:
-    wf_resized = white_fill  # already sized
+    wf_resized = white_fill  # already sized to (white_box size)
     blur_layer = Image.new("RGBA", composed.size, (0, 0, 0, 0))
     blur_layer.paste(wf_resized, (white_box[0], white_box[1]))
 
     mask_arr = np.array(mask.convert("RGBA"))
     white_mask_bool = (mask_arr[..., 0] > 200) & (mask_arr[..., 1] > 200) & (mask_arr[..., 2] > 200) & (mask_arr[..., 3] > 10)
     white_alpha = Image.fromarray((white_mask_bool * 255).astype(np.uint8)).convert("L")
-    # slight feather to blend edges
     white_alpha = white_alpha.filter(ImageFilter.GaussianBlur(radius=6))
     layer = Image.alpha_composite(layer, Image.composite(blur_layer, Image.new("RGBA", composed.size, (0, 0, 0, 0)), white_alpha))
 
-# Prepare face crop: resize to cover green box (cover behavior)
+# Prepare face: cover green box and clip by green mask
 face = face_crop.convert("RGBA")
 fw, fh = face.size
 gw = green_box[2] - green_box[0]
@@ -390,7 +408,7 @@ final = Image.alpha_composite(final, clipped_face)
 st.subheader("Result")
 st.image(final, use_column_width=True)
 
-# Download button
+# Download
 buf = io.BytesIO()
 final.save(buf, format="PNG")
 buf.seek(0)
@@ -398,6 +416,7 @@ st.download_button("Download PNG", data=buf, file_name="car_with_face.png", mime
 
 st.markdown(
     "- Draw one rectangle on the canvas to select the face (or use the slider fallback).\n"
-    "- The white area is filled automatically from the rest of the photo so it visually continues from the crop.\n"
-    "- Use the small optional alignment inputs if you need micro adjustments; otherwise download the result directly."
+    "- Use 'Fill zoom' to expand/contract how much of the surrounding photo is sampled for the white area.\n"
+    "- The fill is anchored at the side that touches the cropped face so that edge stays visually continuous.\n"
+    "- If you want the touching side to be blurred more/less, change the blur_overlap_radius parameter in create_continuous_fill_anchored."
 )
