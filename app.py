@@ -3,15 +3,22 @@ from PIL import Image, ImageFilter
 import numpy as np
 import io
 
-st.set_page_config(page_title="Fixed-mask Face Slot (no external cropper)", layout="centered")
-st.title("Place a face into the fixed GREEN slot (no extra dependencies)")
+st.set_page_config(page_title="Drag-to-crop Face → GREEN slot", layout="centered")
+st.title("Drag-to-crop face into the fixed GREEN slot")
 
 st.write(
-    "Place template.png and mask.png (in the app folder). Mask must use vivid GREEN (0,255,0) for the face rectangle, "
-    "and WHITE (255,255,255) for the blurred fill area. Upload a photo and use sliders to crop/zoom/position the face."
+    "Place template.png and mask.png in the app folder. The mask must use vivid GREEN (0,255,0) to mark the face rectangle. "
+    "Upload a photo, then drag/resize the crop rectangle to fit the green area. Minimal extra controls are provided (rotation & small offset)."
 )
 
-# Try to load fixed template & mask from working directory
+# Try to import the interactive cropper. If it's not available, we'll show a graceful fallback message and a slider-based crop.
+USE_CROPPER = True
+try:
+    from streamlit_cropper import st_cropper
+except Exception:
+    USE_CROPPER = False
+
+# Load fixed template & mask from working directory
 try:
     template = Image.open("template.png").convert("RGBA")
     mask = Image.open("mask.png").convert("RGBA")
@@ -55,7 +62,7 @@ green_box = find_color_bbox(mask, "green")
 white_box = find_color_bbox(mask, "white")
 
 if green_box is None:
-    st.error("Mask does not contain a vivid GREEN box (0,255,0). Edit mask.png to set the face rectangle to pure green.")
+    st.error("Mask does not contain a vivid GREEN box (0,255,0). Edit mask.png so the face rectangle uses pure green.")
     st.stop()
 
 st.write(f"Detected GREEN box: {green_box}")
@@ -65,7 +72,7 @@ if white_box is None:
 # Upload photo
 uploaded = st.file_uploader("Upload a portrait/photo (jpg/png)", type=["jpg", "jpeg", "png"])
 if uploaded is None:
-    st.info("Upload a photo to start. Crop controls will appear after upload.")
+    st.info("Upload a photo to start. An interactive cropper will appear (if streamlit-cropper is installed).")
     st.stop()
 
 photo = Image.open(uploaded).convert("RGBA")
@@ -73,95 +80,106 @@ pw, ph = photo.size
 st.subheader("Photo preview")
 st.image(photo, width=300)
 
-# Compute green aspect for crop aspect locking
+# Determine cropper aspect based on green box
 gw = green_box[2] - green_box[0]
 gh = green_box[3] - green_box[1]
 aspect = None
 if gh != 0:
-    aspect = gw / gh
+    aspect = float(gw) / float(gh)
 
-st.subheader("Crop controls (slider-based)")
-st.write("Move center sliders and adjust zoom so the important facial area fits the green slot.")
-center_x = st.slider("Crop center X (%)", 0, 100, 50)
-center_y = st.slider("Crop center Y (%)", 0, 100, 50)
-zoom = st.slider("Zoom (%) — higher = zoom in (100 = no zoom)", 10, 400, 100)
-rotation = st.slider("Rotate crop (degrees)", -30, 30, 0)
-
-# Build crop rectangle in photo coords that matches green aspect
-cx = int(center_x / 100.0 * pw)
-cy = int(center_y / 100.0 * ph)
-
-# Base crop size choose from smaller dimension
-base = int(min(pw, ph) * 0.6)
-if aspect is not None and aspect > 0:
-    # choose crop that respects green aspect: width = base, height = base/aspect
-    crop_w = base
-    crop_h = max(10, int(base / aspect))
+st.subheader("Interactive crop")
+if USE_CROPPER:
+    st.write("Drag/resize the green crop box to fit the face region. Aspect ratio is locked to the green slot.")
+    try:
+        if aspect is None:
+            cropped = st_cropper(photo, realtime_update=True, box_color="#00FF00")
+        else:
+            cropped = st_cropper(photo, realtime_update=True, box_color="#00FF00", aspect_ratio=aspect)
+    except Exception as e:
+        st.error(f"Cropper failed to initialize: {e}")
+        USE_CROPPER = False
+        cropped = None
 else:
-    crop_w = base
-    crop_h = base
+    st.warning(
+        "Interactive cropper not available. To enable an on-canvas drag cropper install streamlit-cropper (see requirements.txt).\n"
+        "Fallback: use the slider-based crop controls below to approximate the crop."
+    )
+    cropped = None
 
-# apply zoom: zoom >100 means zoom in => smaller crop area
-crop_w = max(10, int(crop_w * (100.0 / zoom)))
-crop_h = max(10, int(crop_h * (100.0 / zoom)))
+# Fallback slider crop if cropper isn't available or failed
+if cropped is None:
+    st.subheader("Fallback: slider-based crop (use if interactive crop is not available)")
+    st.write("Use center sliders + zoom to position the crop manually (aspect locked to the green slot).")
+    center_x = st.slider("Crop center X (%)", 0, 100, 50)
+    center_y = st.slider("Crop center Y (%)", 0, 100, 50)
+    zoom = st.slider("Zoom (%) — higher = zoom in (100 = no zoom)", 10, 400, 100)
+    rotation_fallback = st.slider("Rotate crop (degrees)", -30, 30, 0)
 
-left = max(0, cx - crop_w // 2)
-top = max(0, cy - crop_h // 2)
-right = min(pw, left + crop_w)
-bottom = min(ph, top + crop_h)
+    cx = int(center_x / 100.0 * pw)
+    cy = int(center_y / 100.0 * ph)
+    base = int(min(pw, ph) * 0.6)
+    if aspect is not None and aspect > 0:
+        crop_w = base
+        crop_h = max(10, int(base / aspect))
+    else:
+        crop_w = base
+        crop_h = base
+    crop_w = max(10, int(crop_w * (100.0 / zoom)))
+    crop_h = max(10, int(crop_h * (100.0 / zoom)))
+    left = max(0, cx - crop_w // 2)
+    top = max(0, cy - crop_h // 2)
+    right = min(pw, left + crop_w)
+    bottom = min(ph, top + crop_h)
+    if right - left < crop_w:
+        left = max(0, right - crop_w)
+    if bottom - top < crop_h:
+        top = max(0, bottom - crop_h)
+    crop_box = (left, top, right, bottom)
+    st.write(f"Crop box on photo (pixels): {crop_box}")
+    cropped = photo.crop(crop_box).convert("RGBA")
+    if rotation_fallback != 0:
+        cropped = cropped.rotate(rotation_fallback, resample=Image.BICUBIC, expand=True)
 
-# re-center if truncated
-if right - left < crop_w:
-    left = max(0, right - crop_w)
-if bottom - top < crop_h:
-    top = max(0, bottom - crop_h)
+# Normalize cropped to PIL.Image
+if isinstance(cropped, np.ndarray):
+    cropped = Image.fromarray(cropped)
+if cropped is None:
+    st.error("Crop failed. Try re-uploading the photo or installing streamlit-cropper.")
+    st.stop()
 
-crop_box = (left, top, right, bottom)
-st.write(f"Crop box on photo (pixels): {crop_box}")
+st.image(cropped, caption="Cropped face (this will be placed into the GREEN slot)", width=260)
 
-face_crop = photo.crop(crop_box).convert("RGBA")
-if rotation != 0:
-    face_crop = face_crop.rotate(rotation, resample=Image.BICUBIC, expand=True)
+# Minimal fine-tune controls only
+st.subheader("Fine-tune placement (minimal)")
+offset_x = st.slider("Offset X (pixels)", -300, 300, 0)
+offset_y = st.slider("Offset Y (pixels)", -300, 300, 0)
+rotation = st.slider("Rotation (degrees)", -30, 30, 0)
 
-st.image(face_crop, caption="Cropped face preview", width=240)
-
-# Fine-tune placement
-st.subheader("Placement fine-tune")
-offset_x = st.slider("Offset X (pixels)", -500, 500, 0)
-offset_y = st.slider("Offset Y (pixels)", -500, 500, 0)
-
-# White fill settings
-st.subheader("White-area fill settings")
-blur_radius = st.slider("Blur radius for white fill", 0, 80, 18)
-shear_x = st.slider("Horizontal shear (%)", -40, 40, 0)
-shear_y = st.slider("Vertical shear (%)", -40, 40, 0)
-feather = st.slider("Feather edges of white area (px)", 0, 80, 20)
+# White fill settings (kept simple)
+st.subheader("White-area fill (optional, simple)")
+blur_radius = st.slider("Blur radius for white fill", 0, 60, 18)
+shear_x = st.slider("Horizontal shear (%)", -30, 30, 0)
+shear_y = st.slider("Vertical shear (%)", -30, 30, 0)
+feather = st.slider("Feather edges of white area (px)", 0, 60, 20)
 
 # Create blurred fill for white box
 def create_blurred_fill(photo_img, target_box, blur_r, shear_x_pct, shear_y_pct):
-    tw = target_box[2] - target_box[0]
-    th = target_box[3] - target_box[1]
-    if tw <= 0 or th <= 0:
-        return None
+    tw = max(1, target_box[2] - target_box[0])
+    th = max(1, target_box[3] - target_box[1])
     pw, ph = photo_img.size
     target_aspect = tw / th if th != 0 else 1.0
     photo_aspect = pw / ph if ph != 0 else 1.0
-
-    # center crop to match aspect
     if photo_aspect > target_aspect:
         new_h = ph
         new_w = int(ph * target_aspect)
     else:
         new_w = pw
         new_h = int(pw / target_aspect) if target_aspect != 0 else ph
-
     left = max(0, (pw - new_w) // 2)
     top = max(0, (ph - new_h) // 2)
     cropped = photo_img.crop((left, top, left + new_w, top + new_h)).convert("RGBA")
     resized = cropped.resize((tw, th), Image.LANCZOS)
     blurred = resized.filter(ImageFilter.GaussianBlur(radius=blur_r))
-
-    # simple affine shear
     sx = float(shear_x_pct) / 100.0
     sy = float(shear_y_pct) / 100.0
     a = 1.0
@@ -180,7 +198,7 @@ white_fill = None
 if white_box is not None:
     white_fill = create_blurred_fill(photo, white_box, blur_radius, shear_x, shear_y)
 
-# Compose final result
+# Compose final image
 composed = template.copy().convert("RGBA")
 layer = Image.new("RGBA", composed.size, (0,0,0,0))
 
@@ -191,7 +209,6 @@ if white_fill is not None:
     wf_resized = white_fill.resize((tw, th), Image.LANCZOS)
     blur_layer = Image.new("RGBA", composed.size, (0,0,0,0))
     blur_layer.paste(wf_resized, (white_box[0], white_box[1]))
-    # create alpha from white mask
     mask_arr = np.array(mask.convert("RGBA"))
     white_mask_bool = (mask_arr[...,0] > 200) & (mask_arr[...,1] > 200) & (mask_arr[...,2] > 200) & (mask_arr[...,3] > 10)
     white_alpha = Image.fromarray((white_mask_bool * 255).astype(np.uint8)).convert("L")
@@ -199,8 +216,11 @@ if white_fill is not None:
         white_alpha = white_alpha.filter(ImageFilter.GaussianBlur(radius=feather))
     layer = Image.alpha_composite(layer, Image.composite(blur_layer, Image.new("RGBA", composed.size, (0,0,0,0)), white_alpha))
 
-# Resize face_crop to cover green box (cover behavior)
-face = face_crop.convert("RGBA")
+# Prepare face crop: rotate, resize to cover green box (cover)
+face = cropped.convert("RGBA")
+if rotation != 0:
+    face = face.rotate(rotation, resample=Image.BICUBIC, expand=True)
+
 fw, fh = face.size
 scale_w = (green_box[2] - green_box[0]) / fw
 scale_h = (green_box[3] - green_box[1]) / fh
@@ -209,10 +229,10 @@ new_w = max(1, int(fw * scale))
 new_h = max(1, int(fh * scale))
 face_resized = face.resize((new_w, new_h), Image.LANCZOS)
 
-paste_x = green_box[0] + (green_box[2] - green_box[0] - new_w)//2 + offset_x
-paste_y = green_box[1] + (green_box[3] - green_box[1] - new_h)//2 + offset_y
+paste_x = green_box[0] + (green_box[2] - green_box[0] - new_w)//2 + int(offset_x)
+paste_y = green_box[1] + (green_box[3] - green_box[1] - new_h)//2 + int(offset_y)
 
-# Create green alpha mask
+# Create green alpha mask and clip face to it
 mask_arr = np.array(mask.convert("RGBA"))
 green_mask_bool = (mask_arr[...,1] > 200) & (mask_arr[...,0] < 100) & (mask_arr[...,2] < 100) & (mask_arr[...,3] > 10)
 green_alpha = Image.fromarray((green_mask_bool * 255).astype(np.uint8)).convert("L")
@@ -234,7 +254,6 @@ buf.seek(0)
 st.download_button("Download PNG", data=buf, file_name="car_with_face.png", mime="image/png")
 
 st.markdown(
-    "- Crop using the sliders so the important face area sits inside the green slot.\n"
-    "- Use rotation and offsets to fine tune alignment.\n"
-    "- If green detection fails, edit mask.png to use pure RGB green (0,255,0)."
+    "- Use the drag-resize cropper (best UX) if streamlit-cropper is installed; otherwise the slider fallback is available.\n"
+    "- Keep the important face area inside the green preview. Use the small offset/rotation controls for final alignment."
 )
