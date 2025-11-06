@@ -1,35 +1,38 @@
 from PIL import Image, ImageOps
 import numpy as np
-import mediapipe as mp
 
-def detect_face_bbox(image_np, method="mediapipe"):
+def detect_face_bbox(image_np, method="haar"):
     """
     image_np: HxWx3 uint8 numpy array (RGB)
     returns bounding box as (x, y, w, h) in pixel coords or None
-    Uses MediaPipe face detection.
-    """
-    if method != "mediapipe":
-        raise ValueError("Only mediapipe method implemented in this helper.")
 
-    mp_face = mp.solutions.face_detection
-    with mp_face.FaceDetection(model_selection=0, min_detection_confidence=0.4) as detector:
-        results = detector.process(image_np)
-        if not results.detections:
-            return None
-        # Use the first detection
-        det = results.detections[0]
-        bboxC = det.location_data.relative_bounding_box
-        ih, iw, _ = image_np.shape
-        x = int(bboxC.xmin * iw)
-        y = int(bboxC.ymin * ih)
-        w = int(bboxC.width * iw)
-        h = int(bboxC.height * ih)
-        # Clamp
-        x = max(0, x)
-        y = max(0, y)
-        w = max(1, min(iw - x, w))
-        h = max(1, min(ih - y, h))
-        return (x, y, w, h)
+    Default uses OpenCV Haar cascade which is lightweight and installs cleanly.
+    """
+    if method not in ("haar",):
+        raise ValueError("Only 'haar' method supported in this build. Use method='haar'.")
+
+    import cv2
+    # convert to gray
+    try:
+        gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+    except Exception:
+        # if image is already gray or fails, convert via numpy
+        if image_np.ndim == 2:
+            gray = image_np
+        else:
+            gray = cv2.cvtColor(image_np[:, :, :3], cv2.COLOR_RGB2GRAY)
+
+    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    face_cascade = cv2.CascadeClassifier(cascade_path)
+
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    if len(faces) == 0:
+        return None
+
+    # Take the largest detection (in case of multiple)
+    faces = sorted(faces, key=lambda r: r[2] * r[3], reverse=True)
+    x, y, w, h = faces[0]
+    return (int(x), int(y), int(w), int(h))
 
 
 def _mask_target_box(mask_img):
@@ -38,7 +41,6 @@ def _mask_target_box(mask_img):
     Returns (left, top, right, bottom) in pixel coords.
     """
     mask = np.array(mask_img)
-    # White threshold
     ys, xs = np.where(mask > 10)
     if len(xs) == 0:
         return None
@@ -49,9 +51,10 @@ def _mask_target_box(mask_img):
     return (left, top, right, bottom)
 
 
+from PIL import Image
 def paste_face_on_template(template_img, mask_img, face_img, align="center", blend=0.9, manual_scale=None, manual_offset=(0,0)):
     """
-    Paste face_img onto template_img guided by mask_img. 
+    Paste face_img onto template_img guided by mask_img.
     - template_img: PIL RGBA
     - mask_img: PIL L (white indicates target area)
     - face_img: PIL RGBA (or RGB)
