@@ -1,5 +1,3 @@
-streamlit==1.25.0
-pillow>=9.0.0
-numpy>=1.23.0
-opencv-python-headless>=4.7.0
-face_recognition>=1.3.0    # optional, remove if you don't want face_recognition/dlib
+streamlit>=1.10
+pillow>=9.0
+numpy>=1.21
