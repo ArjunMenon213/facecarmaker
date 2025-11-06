@@ -1,102 +1,137 @@
 import streamlit as st
-from PIL import Image, ImageOps
+from PIL import Image
+import numpy as np
 import io
 from utils import detect_face_bbox, paste_face_on_template
-import numpy as np
 
 st.set_page_config(page_title="Origami Meme Car Maker", layout="centered")
-
 st.title("Origami Meme Car Maker")
-st.write("Upload a portrait and automatically place the face onto a printable origami car template.")
+st.write("Upload a portrait and the app will place the face onto an origami car template (printable).")
 
-# Sidebar: template and mask load
-st.sidebar.header("Template settings")
+# Sidebar: template and mask
+st.sidebar.header("Template / Mask")
 template_file = st.sidebar.file_uploader("Upload car template PNG (optional)", type=["png"])
-mask_file = st.sidebar.file_uploader("Upload mask PNG (same size as template, white = face area)", type=["png"])
+mask_file = st.sidebar.file_uploader("Upload mask PNG (optional, same size as template)", type=["png"])
+use_defaults = st.sidebar.checkbox("Use template.png & mask.png from app folder if available", value=True)
 
-if template_file is None or mask_file is None:
-    st.sidebar.info("If you don't upload template & mask here, the app expects 'template.png' and 'mask.png' in the app folder.")
-    use_default = st.sidebar.checkbox("Try default files in working dir", value=True)
-else:
-    use_default = False
+st.sidebar.markdown("---")
+st.sidebar.write("Tips: create a mask PNG where the face area is filled white and the rest is transparent/black. The script will auto-detect the white region to place the face.")
 
-uploaded = st.file_uploader("Upload a portrait (front-facing works best)", type=["jpg", "jpeg", "png"])
-
-col1, col2 = st.columns(2)
+# Main uploader
+uploaded = st.file_uploader("Upload a portrait (frontal face works best)", type=["jpg", "jpeg", "png"])
 
 if uploaded is None:
-    st.info("Upload a portrait to get started. Portrait with face looking roughly forward gives best results.")
-else:
-    # Load portrait
-    image = Image.open(uploaded).convert("RGBA")
-    st.header("Source portrait")
-    st.image(image, use_column_width=True)
+    st.info("Upload a portrait to get started.")
+    st.stop()
 
-    # Load template & mask
-    if not use_default:
-        if template_file is None or mask_file is None:
-            st.warning("Upload template and mask in the sidebar or enable default files.")
-            st.stop()
-        template = Image.open(template_file).convert("RGBA")
-        mask = Image.open(mask_file).convert("L")
-    else:
+# Load portrait
+try:
+    portrait = Image.open(uploaded).convert("RGBA")
+except Exception as e:
+    st.error(f"Could not open the uploaded image: {e}")
+    st.stop()
+
+st.header("Source portrait")
+st.image(portrait, use_column_width=True)
+
+# Load template and mask (either uploaded or defaults)
+def load_template_and_mask():
+    if template_file is not None and mask_file is not None:
         try:
-            template = Image.open("template.png").convert("RGBA")
-            mask = Image.open("mask.png").convert("L")
-        except FileNotFoundError:
-            st.error("Default template.png / mask.png not found in app folder. Please upload them in the sidebar.")
-            st.stop()
+            tpl = Image.open(template_file).convert("RGBA")
+            msk = Image.open(mask_file).convert("L")
+            return tpl, msk
+        except Exception as e:
+            st.error(f"Failed to open uploaded template or mask: {e}")
+            return None, None
 
+    if use_defaults:
+        try:
+            tpl = Image.open("template.png").convert("RGBA")
+            msk = Image.open("mask.png").convert("L")
+            return tpl, msk
+        except FileNotFoundError:
+            # fall through to None return
+            pass
+
+    st.warning("No template/mask provided. The result will use a centered fallback area.")
+    return None, None
+
+template, mask = load_template_and_mask()
+
+if template is not None:
     st.subheader("Template preview")
     st.image(template, use_column_width=True)
 
-    # Detect face bbox in uploaded image
-    expand = st.slider("Face crop expansion (%)", min_value=0, max_value=100, value=20)
-    detection_method = st.selectbox("Face detection engine", ["MediaPipe (default)"])
-    face_bbox = detect_face_bbox(np.array(image.convert("RGB")), method="mediapipe")
-    if face_bbox is None:
-        st.warning("No face automatically detected. The whole image will be used. You can re-upload a different image.")
-        face_crop = image
-    else:
-        x, y, w, h = face_bbox
-        # expand box
-        ex = int(w * (expand / 100))
-        ey = int(h * (expand / 100))
-        left = max(0, x - ex)
-        top = max(0, y - ey)
-        right = min(image.width, x + w + ex)
-        bottom = min(image.height, y + h + ey)
-        face_crop = image.crop((left, top, right, bottom))
+# Face detection and crop
+st.subheader("Face detection")
+expansion_pct = st.slider("Face crop expansion (%)", min_value=0, max_value=100, value=20, help="Expand detected face box to include hair/forehead.")
+# Detect using Haar cascades (utils.detect_face_bbox)
+rgb_np = np.array(portrait.convert("RGB"))
+face_bbox = detect_face_bbox(rgb_np, method="haar")
 
-    st.subheader("Detected face (cropped)")
-    st.image(face_crop, use_column_width=False, width=240)
+if face_bbox is None:
+    st.warning("No face automatically detected. Using the whole uploaded image as the face source.")
+    face_crop = portrait.copy()
+else:
+    x, y, w, h = face_bbox
+    ex = int(w * (expansion_pct / 100.0))
+    ey = int(h * (expansion_pct / 100.0))
+    left = max(0, x - ex)
+    top = max(0, y - ey)
+    right = min(portrait.width, x + w + ex)
+    bottom = min(portrait.height, y + h + ey)
+    face_crop = portrait.crop((left, top, right, bottom))
 
-    # find mask target box and apply paste
-    result = paste_face_on_template(template, mask, face_crop, align="center", blend=0.85)
+st.image(face_crop, caption="Cropped face source", width=240)
 
-    st.subheader("Result (printable)")
-    st.image(result, use_column_width=True)
+# Adjustment controls
+st.subheader("Adjustments")
+auto_scale = st.checkbox("Auto scale to mask area (recommended)", value=True)
+manual_scale = None
+if not auto_scale:
+    scale_pct = st.slider("Manual scale (%)", 10, 300, 100)
+    manual_scale = scale_pct / 100.0
 
-    # small manual adjustments: scale and offset
-    st.subheader("Manual adjustments (if needed)")
-    scale = st.slider("Scale face (percent)", 50, 200, 100)
-    offset_x = st.slider("Offset X (pixels)", -300, 300, 0)
-    offset_y = st.slider("Offset Y (pixels)", -300, 300, 0)
+offset_x = st.slider("Offset X (pixels)", -500, 500, 0)
+offset_y = st.slider("Offset Y (pixels)", -500, 500, 0)
+blend = st.slider("Blend/opacity (0.0 = transparent, 1.0 = opaque)", 0.0, 1.0, 0.9)
 
-    result_adjusted = paste_face_on_template(template, mask, face_crop, align="center", blend=0.85,
-                                             manual_scale=scale / 100.0, manual_offset=(offset_x, offset_y))
+# Compose result
+if template is None or mask is None:
+    # create a blank white template to preview placement if none supplied
+    tw, th = 2480, 3508  # default A4 at 300 DPI-ish for printable preview (large canvas)
+    template_preview = Image.new("RGBA", (tw, th), (255, 255, 255, 255))
+    mask_preview = Image.new("L", (tw, th), 0)
+    # create a centered rectangle as mask target (40% height)
+    rect_w = int(tw * 0.4)
+    rect_h = int(th * 0.4)
+    left = (tw - rect_w) // 2
+    top = (th - rect_h) // 2
+    mask_arr = mask_preview.load()
+    for yy in range(top, top + rect_h):
+        for xx in range(left, left + rect_w):
+            mask_arr[xx, yy] = 255
+    template_to_use, mask_to_use = template_preview, mask_preview
+else:
+    template_to_use, mask_to_use = template, mask
 
-    st.image(result_adjusted, use_column_width=True)
+result = paste_face_on_template(
+    template_to_use,
+    mask_to_use,
+    face_crop,
+    manual_scale=manual_scale,
+    manual_offset=(offset_x, offset_y),
+    blend=blend
+)
 
-    # Download button
-    buf = io.BytesIO()
-    result_adjusted.convert("RGBA").save(buf, format="PNG")
-    buf.seek(0)
-    st.download_button(
-        label="Download PNG (printable)",
-        data=buf,
-        file_name="origami_car_with_face.png",
-        mime="image/png"
-    )
+st.subheader("Result (printable)")
+st.image(result, use_column_width=True)
 
-    st.markdown("Instructions: print the PNG at desired size (A4 recommended), cut along lines, fold where indicated.")
+# Download
+buf = io.BytesIO()
+result.convert("RGBA").save(buf, format="PNG")
+buf.seek(0)
+st.download_button("Download PNG (printable)", data=buf, file_name="origami_car_with_face.png", mime="image/png")
+
+st.markdown("Instructions: print the PNG at desired size (A4 recommended), cut along lines, and fold as indicated.")
