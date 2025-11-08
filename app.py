@@ -30,7 +30,7 @@ try:
     # center the banner using columns
     cols = st.columns([1, 2, 1])
     with cols[1]:
-        st.image(banner, use_column_width=False, width=500)
+        st.image(banner, use_column_width=False, width=1000)
 except Exception:
     # If banner not found or cannot be opened, continue silently
     pass
