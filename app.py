@@ -21,14 +21,17 @@ from io import BytesIO
 st.set_page_config(page_title="Origami Meme Car — Simple UI", layout="centered")
 
 # --- Banner: center column occupies 50% of horizontal width (columns weights [1,2,1]) ---
+st.set_page_config(page_title="Origami Meme Car — Large Preview", layout="centered")
+# ---------- Banner (centered 50% width) ----------
 try:
     banner = Image.open("banner.png").convert("RGBA")
     left, center, right = st.columns([1, 2, 1])
     with center:
+        # Show banner using a centered column occupying ~50% page width
         st.image(banner, use_column_width=True)
 except Exception:
-    # If banner is missing or invalid, continue silently
     pass
+
 
 st.title("Origami Meme Car — upload & crop")
 
