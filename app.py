@@ -27,12 +27,11 @@ st.set_page_config(page_title="Origami Meme Car — Simple UI", layout="centered
 # Display banner.png at the very top if present
 try:
     banner = Image.open("banner.png").convert("RGBA")
-    # center the banner using columns
-    cols = st.columns([1, 2, 1])
-    with cols[1]:
-        st.image(banner, use_column_width=False, width=1000)
+    left, center, right = st.columns([1, 2, 1])
+    with center:
+        st.image(banner, use_column_width=True)
 except Exception:
-    # If banner not found or cannot be opened, continue silently
+    # If banner is missing or invalid, continue silently
     pass
 
 st.title("Origami Meme Car — upload & crop")
