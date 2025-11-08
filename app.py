@@ -1,18 +1,14 @@
 """
-Origami Meme Car — Use fixed template+mask, interactive crop, continuous background fill,
-with a banner image shown at the top of the app (banner.png).
+Origami Meme Car — Simple UI with centered banner (50% width)
 
-Place these files in the app folder:
-- template.png
-- mask.png
-- banner.png (500x150)
-
-User flow:
-- Upload a photo.
-- Draw one rectangle (or use sliders fallback) to select the face area.
-- The selected crop is placed into the GREEN slot in the hidden template.
-- The WHITE area in the template is filled by sampling the contiguous part of the original photo.
-- Download the final PNG.
+Behavior:
+- template.png and mask.png must exist in the app folder (used in background).
+  - mask: vivid GREEN (0,255,0) marks the face slot.
+  - mask: optional WHITE (255,255,255) marks the area to be filled with the rest of the photo.
+- The banner image banner.png (if present) is displayed centered across the top and sized to occupy
+  the center 50% of the app width (25% margins left and right).
+- User uploads a photo, draws one rectangle on the canvas (or uses slider fallback) to select the face crop.
+- The crop is placed into the GREEN slot and the WHITE area is filled automatically from the photo.
 """
 
 import streamlit as st
@@ -24,7 +20,7 @@ from io import BytesIO
 
 st.set_page_config(page_title="Origami Meme Car — Simple UI", layout="centered")
 
-# Display banner.png at the very top if present
+# --- Banner: center column occupies 50% of horizontal width (columns weights [1,2,1]) ---
 try:
     banner = Image.open("banner.png").convert("RGBA")
     left, center, right = st.columns([1, 2, 1])
@@ -39,7 +35,7 @@ st.title("Origami Meme Car — upload & crop")
 st.write(
     "Upload a photo, draw one rectangle to select the face (or use the slider fallback). "
     "The app places your crop into the template's GREEN slot and fills the WHITE area with the rest of the photo. "
-    "Template and mask are used in the background (do not need to be shown)."
+    "Template and mask are used in the background."
 )
 
 # Compatibility helper for streamlit-drawable-canvas image_to_url on older Streamlit
@@ -109,7 +105,6 @@ if green_box is None:
     st.error("Mask must contain a vivid GREEN region (0,255,0) marking the face slot.")
     st.stop()
 
-# Short confirmation for user (no templates/masks shown)
 st.info("template.png and mask.png loaded (used in background).")
 
 # Upload photo
@@ -378,4 +373,3 @@ st.markdown(
     "- Draw one rectangle to select the face (or use the slider fallback). The template and mask run in the background.\n"
     "- The white area is filled automatically from the rest of the photo."
 )
-
